@@ -45,6 +45,10 @@ namespace CrashCatcher.Win
 
         public string StatusText = "";
         public Color StatusColor = Color.Gray;
+        /// <summary>Медленная пульсация индикатора, пока тулза следит за логом.</summary>
+        public bool Pulse;
+        DateTime _lastPulseFrame;
+        const double PulsePeriodSec = 2.6;
 
         readonly StringFormat _sfLeft, _sfLeftClip, _sfCenter, _sfMeasure;
 
@@ -84,6 +88,8 @@ namespace CrashCatcher.Win
             _renderTimer.Tick += (s, e) =>
             {
                 if (_flash != null && DateTime.Now >= _flashUntil) { _flash = null; _dirty = true; }
+                // пульсация: ~15 кадров/с, только пока виджет виден
+                if (Pulse && Visible && (DateTime.Now - _lastPulseFrame).TotalMilliseconds >= 66) { _lastPulseFrame = DateTime.Now; _dirty = true; }
                 if (_dirty) { _dirty = false; Render(); }
             };
             _topTimer = new Timer { Interval = 2000 };
@@ -342,7 +348,19 @@ namespace CrashCatcher.Win
             int cy = head.Top + head.Height / 2;
             float x = S(11);
             float dot = 4 * _s;
-            using (var b = new SolidBrush(StatusColor)) g.FillEllipse(b, x, cy - dot, dot * 2, dot * 2);
+            if (Pulse)
+            {
+                // 0..1..0 плавно, период ~2.6 с
+                double t = (DateTime.Now - DateTime.Today).TotalSeconds;
+                float ph = (float)((1 - Math.Cos(2 * Math.PI * t / PulsePeriodSec)) / 2);
+                float glow = dot * (1.3f + 1.1f * ph);
+                using (var b = new SolidBrush(Color.FromArgb((int)(150 * (1 - ph) + 25), StatusColor)))
+                    g.FillEllipse(b, x + dot - glow, cy - glow, glow * 2, glow * 2);
+                using (var b = new SolidBrush(Color.FromArgb((int)(150 + 105 * ph), StatusColor)))
+                    g.FillEllipse(b, x, cy - dot, dot * 2, dot * 2);
+            }
+            else
+                using (var b = new SolidBrush(StatusColor)) g.FillEllipse(b, x, cy - dot, dot * 2, dot * 2);
             x += S(14);
             const string title = "Crash Catcher";
             DrawText(g, title, _fTitle, Color.FromArgb(240, 240, 240), new RectangleF(x, head.Top, S(160), head.Height), shadow, _sfLeftClip);
@@ -357,7 +375,7 @@ namespace CrashCatcher.Win
                     new[] { "b_hide", G_Minimize, "–", "Скрыть виджет (" + _app.S.HotkeyToggleVisible + ")" },
                     new[] { "b_set", G_Settings, "⚙", "Настройки" },
                     new[] { "b_pin", G_Pin, "📌", "Закрепить: клики пойдут сквозь виджет в игру (" + _app.S.HotkeyTogglePin + ")" },
-                    new[] { "b_clear", G_Delete, "✕", "Очистить консоль" },
+                    new[] { "b_clear", G_Delete, "✕", "Очистить консоль (" + _app.S.HotkeyClear + ")" },
                     new[] { "b_pause", _app.Paused ? G_Play : G_Pause, _app.Paused ? "▶" : "‖", _app.Paused ? "Продолжить слежение" : "Пауза слежения" },
                     new[] { "b_clip", G_Record, "●", "Сохранить клип сейчас (" + _app.S.ReplayHotkey + ")" },
                 };

@@ -40,7 +40,7 @@ namespace CrashCatcher.Win
         int _lastBookVersion = -1;
         bool _missingReported;
 
-        const int HK_VISIBLE = 1, HK_PIN = 2;
+        const int HK_VISIBLE = 1, HK_PIN = 2, HK_CLEAR = 3;
 
         readonly bool _ephemeral;
 
@@ -511,6 +511,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
         {
             if (id == HK_VISIBLE) SetWidgetVisible(!Overlay.Visible);
             else if (id == HK_PIN) SetPinned(!S.Pinned);
+            else if (id == HK_CLEAR) { ClearConsole(); Overlay.Flash("Консоль очищена"); }
         }
 
         public bool HasLogPath { get { return !string.IsNullOrWhiteSpace(S.LogPath); } }
@@ -521,7 +522,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             {
                 if (!HasLogPath) return "Укажи путь к Player.log в настройках (кнопка с шестерёнкой)";
                 if (Paused) return "Пауза";
-                return "Ошибок пока нет · слежу за " + Path.GetFileName(AppSettings.Expand(S.LogPath));
+                return ""; // пустая консоль — без надписи
             }
         }
 
@@ -537,6 +538,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             else if (_tailState == TailState.Error) { c = Color.FromArgb(255, 107, 107); t = "Ошибка чтения " + file; }
             else { c = Color.FromArgb(150, 150, 150); t = "Запуск…"; }
             Overlay.StatusColor = c;
+            Overlay.Pulse = HasLogPath && !Paused && _tailState == TailState.Watching;
             Overlay.StatusText = t;
             Overlay.MarkDirty();
             if (_tray != null)
@@ -570,7 +572,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             n.Pinned = S.Pinned; n.WidgetVisible = S.WidgetVisible; n.BackgroundOpacity = S.BackgroundOpacity;
             n.FirstRunDone = true;
             n.Normalize();
-            bool hotkeysChanged = n.HotkeyToggleVisible != S.HotkeyToggleVisible || n.HotkeyTogglePin != S.HotkeyTogglePin;
+            bool hotkeysChanged = n.HotkeyToggleVisible != S.HotkeyToggleVisible || n.HotkeyTogglePin != S.HotkeyTogglePin || n.HotkeyClear != S.HotkeyClear;
             S = n;
             Book.MaxItems = S.MaxItems;
             _planner.Apply(S);
@@ -600,6 +602,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             UnregisterHotkeys();
             TryRegister(HK_VISIBLE, S.HotkeyToggleVisible, "показать/скрыть");
             TryRegister(HK_PIN, S.HotkeyTogglePin, "закрепить/открепить");
+            TryRegister(HK_CLEAR, S.HotkeyClear, "очистить консоль");
         }
 
         void TryRegister(int id, string text, string what)
@@ -616,11 +619,12 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             if (!Overlay.IsHandleCreated) return;
             Native.UnregisterHotKey(Overlay.Handle, HK_VISIBLE);
             Native.UnregisterHotKey(Overlay.Handle, HK_PIN);
+            Native.UnregisterHotKey(Overlay.Handle, HK_CLEAR);
         }
 
         // ---------------------------------------------------------------- трей
 
-        ToolStripMenuItem _miShow, _miPin, _miPause, _miAuto;
+        ToolStripMenuItem _miShow, _miPin, _miPause, _miAuto, _miClear;
 
         void CreateTray()
         {
@@ -641,6 +645,8 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             menu.Items.Add(_miPin);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Сохранить клип сейчас", null, (s, e) => ManualClip(0)));
+            _miClear = new ToolStripMenuItem("Очистить консоль", null, (s, e) => ClearConsole());
+            menu.Items.Add(_miClear);
             menu.Items.Add(_miAuto);
             menu.Items.Add(_miPause);
             menu.Items.Add(new ToolStripSeparator());
@@ -663,6 +669,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             _miPin.Checked = S.Pinned;
             _miPin.Text = S.Pinned ? "Открепить" : "Закрепить (клики сквозь виджет)";
             _miPin.ShortcutKeyDisplayString = S.HotkeyTogglePin;
+            _miClear.ShortcutKeyDisplayString = S.HotkeyClear;
             _miPause.Checked = Paused;
             _miAuto.Checked = S.AutoSave;
         }

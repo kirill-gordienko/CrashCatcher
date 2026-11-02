@@ -21,7 +21,7 @@ namespace CrashCatcher.Win
         TextBox _txtLog, _txtClipFolder, _txtTestLine;
         CheckBox _chkReadExisting, _chkAutoSave, _chkLink, _chkShowInfo, _chkAutostart;
         NumericUpDown _numPoll, _numDelay, _numCooldown, _numRepeat, _numReplay, _numWait, _numFont, _numMax, _numHold;
-        HotkeyBox _hkReplay, _hkVisible, _hkPin;
+        HotkeyBox _hkReplay, _hkVisible, _hkPin, _hkClear;
         ComboBox _cmbInput;
         DataGridView _grid;
         BindingList<RuleConfig> _rules;
@@ -258,6 +258,8 @@ namespace CrashCatcher.Win
             t.Row("Показать / скрыть:", _hkVisible, null);
             _hkPin = new HotkeyBox { Text = _s.HotkeyTogglePin };
             t.Row("Закрепить / открепить:", _hkPin, null);
+            _hkClear = new HotkeyBox { Text = _s.HotkeyClear };
+            t.Row("Очистить консоль:", _hkClear, null);
             t.Hint(("Закреплённый виджет пропускает клики в игру. Открепить его можно этим сочетанием или из меню значка в трее. " +
                          "Backspace в поле — убрать сочетание."));
             _numFont = Num(8, 24, (decimal)_s.FontSize, 0, 1);
@@ -375,6 +377,7 @@ namespace CrashCatcher.Win
             n.ClipWaitSec = (double)_numWait.Value;
             n.HotkeyToggleVisible = _hkVisible.Text.Trim();
             n.HotkeyTogglePin = _hkPin.Text.Trim();
+            n.HotkeyClear = _hkClear.Text.Trim();
             n.FontSize = (float)_numFont.Value;
             n.MaxItems = (int)_numMax.Value;
             n.ShowInfo = _chkShowInfo.Checked;
@@ -399,7 +402,7 @@ namespace CrashCatcher.Win
                 return false;
             }
             n.ReplayHotkey = hk.ToString();
-            foreach (var pair in new[] { new[] { n.HotkeyToggleVisible, "показать/скрыть" }, new[] { n.HotkeyTogglePin, "закрепить/открепить" } })
+            foreach (var pair in new[] { new[] { n.HotkeyToggleVisible, "показать/скрыть" }, new[] { n.HotkeyTogglePin, "закрепить/открепить" }, new[] { n.HotkeyClear, "очистить консоль" } })
             {
                 if (string.IsNullOrEmpty(pair[0])) continue;
                 Hotkey h2;
@@ -416,11 +419,19 @@ namespace CrashCatcher.Win
                     return false;
                 }
             }
-            if (!string.IsNullOrEmpty(n.HotkeyToggleVisible) && n.HotkeyToggleVisible == n.HotkeyTogglePin)
+            var used = new List<string>();
+            foreach (var k in new[] { n.HotkeyToggleVisible, n.HotkeyTogglePin, n.HotkeyClear })
             {
-                _tabs.SelectedIndex = 4;
-                MessageBox.Show(this, "Сочетания для «показать» и «закрепить» совпадают.", "Crash Catcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
+                if (string.IsNullOrEmpty(k)) continue;
+                Hotkey hp;
+                var norm = Hotkey.TryParse(k, out hp) ? hp.ToString() : k;
+                if (used.Contains(norm))
+                {
+                    _tabs.SelectedIndex = 4;
+                    MessageBox.Show(this, "Сочетание " + norm + " назначено на два действия.", "Crash Catcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+                used.Add(norm);
             }
             try { SetAutostart(_chkAutostart.Checked); } catch { }
             _app.ApplySettings(n);

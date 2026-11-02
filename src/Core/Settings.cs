@@ -92,6 +92,7 @@ namespace CrashCatcher.Core
         // --- виджет ---
         [DataMember(Order = 40)] public string HotkeyToggleVisible { get; set; }
         [DataMember(Order = 41)] public string HotkeyTogglePin { get; set; }
+        [DataMember(Order = 53)] public string HotkeyClear { get; set; }
         [DataMember(Order = 42)] public bool Pinned { get; set; }
         [DataMember(Order = 43)] public bool WidgetVisible { get; set; }
         [DataMember(Order = 44)] public int WidgetX { get; set; }
@@ -128,6 +129,7 @@ namespace CrashCatcher.Core
             Rules = RuleConfig.Defaults();
             HotkeyToggleVisible = "Ctrl+Shift+F11";
             HotkeyTogglePin = "Ctrl+Shift+F12";
+            HotkeyClear = "Ctrl+Shift+F9";
             Pinned = false;
             WidgetVisible = true;
             WidgetX = int.MinValue; WidgetY = int.MinValue;
@@ -165,6 +167,7 @@ namespace CrashCatcher.Core
             }
             if (HotkeyToggleVisible == null) HotkeyToggleVisible = "";
             if (HotkeyTogglePin == null) HotkeyTogglePin = "";
+            if (HotkeyClear == null) HotkeyClear = "";
             BackgroundOpacity = Clamp(BackgroundOpacity, 0, 1);
             FontSize = (float)Clamp(FontSize, 8, 24);
             MaxItems = Clamp(MaxItems, 20, 10000);
