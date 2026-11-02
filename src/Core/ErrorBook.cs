@@ -52,12 +52,14 @@ namespace CrashCatcher.Core
 
         public IList<ErrorRecord> Items { get { return _items; } }
 
+        static readonly Regex Hex = new Regex(@"0x[0-9A-Fa-f]+", RegexOptions.Compiled);
         static readonly Regex Digits = new Regex(@"\d+", RegexOptions.Compiled);
         static readonly Regex Spaces = new Regex(@"\s+", RegexOptions.Compiled);
 
         public static string Normalize(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
+            s = Hex.Replace(s, "0x#");
             s = Digits.Replace(s, "#");
             s = Spaces.Replace(s, " ").Trim();
             return s.Length > 300 ? s.Substring(0, 300) : s;
@@ -72,6 +74,9 @@ namespace CrashCatcher.Core
                 if (s.IndexOf("UnityEngine.Debug", StringComparison.Ordinal) >= 0) continue;
                 if (s.IndexOf("UnityEngine.Logger", StringComparison.Ordinal) >= 0) continue;
                 if (s.IndexOf("DebugLogHandler", StringComparison.Ordinal) >= 0) continue;
+                // UE: адреса колстека без символов ничего не говорят о месте ошибки
+                if (s.IndexOf("[Callstack]", StringComparison.Ordinal) >= 0 || s.EndsWith("Stack:", StringComparison.Ordinal)) continue;
+                if (s.EndsWith(": Error:", StringComparison.Ordinal) || s.EndsWith(": Warning:", StringComparison.Ordinal)) continue;
                 return s;
             }
             return "";

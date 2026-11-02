@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
@@ -27,8 +28,71 @@ namespace CrashCatcher.Core
         [DataMember(Order = 9)] public string Color { get; set; }
 
         public bool IsMarker { get { return string.Equals(Mode, "marker", StringComparison.OrdinalIgnoreCase); } }
+        /// <summary>"ignore" — исключение: ошибка, чей текст совпал с шаблоном, отбрасывается.</summary>
+        public bool IsIgnore { get { return string.Equals(Mode, "ignore", StringComparison.OrdinalIgnoreCase); } }
+
+        /// <summary>Ensure, которые сам редактор UE пишет при каждом запуске (не ошибки игры).</summary>
+        public static RuleConfig UnrealEditorStartupIgnore()
+        {
+            return new RuleConfig
+            {
+                Enabled = true, Name = "Игнор: ensure редактора при старте",
+                Pattern = @"r\.[\w.]+ is deprecated|^AssetBaseClassLoaded\b",
+                Mode = "ignore", SaveClip = false, Tag = "SKIP", Color = "#868E96"
+            };
+        }
 
         public RuleConfig Clone() { return (RuleConfig)MemberwiseClone(); }
+
+        public static List<RuleConfig> Defaults(string engine)
+        {
+            return EngineProfile.ById(engine) == EngineProfile.Unreal ? UnrealDefaults() : Defaults();
+        }
+
+        /// <summary>Пресет для Unreal Engine 5 (строки разбираются уже без префикса «[время][кадр]»).</summary>
+        public static List<RuleConfig> UnrealDefaults()
+        {
+            return new List<RuleConfig>
+            {
+                UnrealEditorStartupIgnore(),
+                new RuleConfig
+                {
+                    Enabled = true, Name = "Краш / Fatal",
+                    Pattern = @"^(?:\w+: (?:Error|Fatal): )?(?:=== Critical error: ===|Fatal error[:!]|appError called:|Unhandled Exception:|Runnable thread .* crashed)",
+                    Mode = "line", SaveClip = true, Immediate = true, Group = true, Tag = "CRASH", Color = "#F06595"
+                },
+                new RuleConfig
+                {
+                    Enabled = true, Name = "check() — Assertion failed",
+                    Pattern = @"^(?:\w+: (?:Error|Fatal): )?Assertion failed: (?<msg>.*)",
+                    Mode = "line", SaveClip = true, Tag = "CHECK", Color = "#E599F7"
+                },
+                new RuleConfig
+                {
+                    Enabled = true, Name = "ensure()",
+                    Pattern = @"^(?:\w+: (?:Error|Warning): )?Ensure condition failed: (?<msg>.*)",
+                    Mode = "line", SaveClip = true, Tag = "ENSURE", Color = "#FFD43B"
+                },
+                new RuleConfig
+                {
+                    Enabled = true, Name = "Accessed None (Blueprint)",
+                    Pattern = @"^(?:\w+: (?:Error|Warning): )?(?:Script Msg: )?(?<msg>Accessed None\b.*)",
+                    Mode = "line", SaveClip = true, Tag = "NONE", Color = "#FF6B6B"
+                },
+                new RuleConfig
+                {
+                    Enabled = true, Name = "Blueprint Runtime Error",
+                    Pattern = @"Blueprint Runtime Error: (?<msg>.*)",
+                    Mode = "line", SaveClip = true, Tag = "BP", Color = "#FF8787"
+                },
+                new RuleConfig
+                {
+                    Enabled = true, Name = "Любой Error: (кроме колстека)",
+                    Pattern = @"^(?!LogOutputDevice: )\w+: Error: (?!\[Callstack\]|Stack:\s*$|\s*$).+",
+                    Mode = "line", SaveClip = false, Tag = "ERR", Color = "#FFA94D"
+                },
+            };
+        }
 
         public static List<RuleConfig> Defaults()
         {
@@ -66,7 +130,11 @@ namespace CrashCatcher.Core
     public sealed class AppSettings
     {
         // --- лог ---
+        /// <summary>"unity" или "unreal".</summary>
+        [DataMember(Order = 0)] public string Engine { get; set; }
+        /// <summary>Путь к логу Unity (имя поля сохранено для совместимости со старыми настройками).</summary>
         [DataMember(Order = 1)] public string LogPath { get; set; }
+        [DataMember(Order = 4)] public string LogPathUnreal { get; set; }
         [DataMember(Order = 2)] public bool ReadExistingOnStart { get; set; }
         [DataMember(Order = 3)] public int PollMs { get; set; }
 
@@ -87,7 +155,22 @@ namespace CrashCatcher.Core
         [DataMember(Order = 22)] public double ClipWaitSec { get; set; }
 
         // --- правила ---
+        /// <summary>Правила Unity (имя поля сохранено для совместимости).</summary>
         [DataMember(Order = 30)] public List<RuleConfig> Rules { get; set; }
+        [DataMember(Order = 31)] public List<RuleConfig> RulesUnreal { get; set; }
+
+        public bool IsUnreal { get { return EngineProfile.ById(Engine) == EngineProfile.Unreal; } }
+        public EngineProfile Profile { get { return EngineProfile.ById(Engine); } }
+
+        /// <summary>Лог выбранного движка.</summary>
+        public string ActiveLogPath
+        {
+            get { return IsUnreal ? LogPathUnreal : LogPath; }
+            set { if (IsUnreal) LogPathUnreal = value; else LogPath = value; }
+        }
+
+        /// <summary>Правила выбранного движка.</summary>
+        public List<RuleConfig> ActiveRules { get { return IsUnreal ? RulesUnreal : Rules; } }
 
         // --- виджет ---
         [DataMember(Order = 40)] public string HotkeyToggleVisible { get; set; }
@@ -104,6 +187,8 @@ namespace CrashCatcher.Core
         [DataMember(Order = 50)] public int MaxItems { get; set; }
         [DataMember(Order = 51)] public bool ShowInfo { get; set; }
         [DataMember(Order = 52)] public bool FirstRunDone { get; set; }
+        /// <summary>Исключение для ensure редактора уже добавлялось (если его удалить — не вернётся).</summary>
+        [DataMember(Order = 54)] public bool UnrealIgnoreAdded { get; set; }
 
         public AppSettings() { SetDefaults(); }
 
@@ -112,7 +197,9 @@ namespace CrashCatcher.Core
 
         private void SetDefaults()
         {
+            Engine = "unity";
             LogPath = "";
+            LogPathUnreal = "";
             ReadExistingOnStart = false;
             PollMs = 250;
             AutoSave = true;
@@ -127,6 +214,7 @@ namespace CrashCatcher.Core
             ClipFolder = DefaultVideos();
             ClipWaitSec = 60;
             Rules = RuleConfig.Defaults();
+            RulesUnreal = RuleConfig.UnrealDefaults();
             HotkeyToggleVisible = "Ctrl+Shift+F11";
             HotkeyTogglePin = "Ctrl+Shift+F12";
             HotkeyClear = "Ctrl+Shift+F9";
@@ -145,6 +233,16 @@ namespace CrashCatcher.Core
         public void Normalize()
         {
             if (LogPath == null) LogPath = "";
+            if (LogPathUnreal == null) LogPathUnreal = "";
+            Engine = EngineProfile.ById(Engine).Id;
+            if (RulesUnreal == null || RulesUnreal.Count == 0) RulesUnreal = RuleConfig.UnrealDefaults();
+            RulesUnreal.RemoveAll(r => r == null);
+            if (!UnrealIgnoreAdded)
+            {
+                // обновление со старой версии: добавляем исключение один раз
+                if (!RulesUnreal.Any(r => r.IsIgnore)) RulesUnreal.Insert(0, RuleConfig.UnrealEditorStartupIgnore());
+                UnrealIgnoreAdded = true;
+            }
             PollMs = Clamp(PollMs, 50, 5000);
             if (string.IsNullOrWhiteSpace(ReplayHotkey)) ReplayHotkey = "Alt+F10";
             if (InputMode != "vk") InputMode = "scancode";
@@ -157,7 +255,7 @@ namespace CrashCatcher.Core
             ClipWaitSec = Clamp(ClipWaitSec, 5, 600);
             if (Rules == null || Rules.Count == 0) Rules = RuleConfig.Defaults();
             Rules.RemoveAll(r => r == null);
-            foreach (var r in Rules)
+            foreach (var r in Rules.Concat(RulesUnreal))
             {
                 if (r.Name == null) r.Name = "Правило";
                 if (r.Pattern == null) r.Pattern = "";
@@ -180,6 +278,8 @@ namespace CrashCatcher.Core
             var s = (AppSettings)MemberwiseClone();
             s.Rules = new List<RuleConfig>();
             if (Rules != null) foreach (var r in Rules) s.Rules.Add(r.Clone());
+            s.RulesUnreal = new List<RuleConfig>();
+            if (RulesUnreal != null) foreach (var r in RulesUnreal) s.RulesUnreal.Add(r.Clone());
             return s;
         }
 

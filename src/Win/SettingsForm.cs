@@ -25,12 +25,23 @@ namespace CrashCatcher.Win
         ComboBox _cmbInput;
         DataGridView _grid;
         BindingList<RuleConfig> _rules;
-        Label _lblTest, _lblTestRun;
+        Label _lblTest, _lblTestRun, _lblLogHint, _lblEngineNote;
+        ComboBox _cmbEngine;
+        Button _btnFind;
+        string _engine;
+        readonly Dictionary<string, string> _paths = new Dictionary<string, string>();
+        readonly Dictionary<string, BindingList<RuleConfig>> _rulesBy = new Dictionary<string, BindingList<RuleConfig>>();
+        bool _switching;
 
         public SettingsForm(AppController app, AppSettings s)
         {
             _app = app;
             _s = s;
+            _engine = s.Engine;
+            _paths["unity"] = s.LogPath;
+            _paths["unreal"] = s.LogPathUnreal;
+            _rulesBy["unity"] = new BindingList<RuleConfig>(s.Rules.Select(r => r.Clone()).ToList());
+            _rulesBy["unreal"] = new BindingList<RuleConfig>(s.RulesUnreal.Select(r => r.Clone()).ToList());
 
             SuspendLayout();
             AutoScaleDimensions = new SizeF(96f, 96f);
@@ -83,22 +94,28 @@ namespace CrashCatcher.Win
         {
             var page = new TabPage("Лог игры");
             var t = new RowsPanel();
-            _txtLog = new TextBox { Text = _s.LogPath };
+            _cmbEngine = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+            _cmbEngine.Items.Add(EngineProfile.Unity.Title);
+            _cmbEngine.Items.Add(EngineProfile.Unreal.Title);
+            _cmbEngine.SelectedIndex = _engine == "unreal" ? 1 : 0;
+            _cmbEngine.SelectedIndexChanged += (o, e) => { if (!_switching) SetEngine(_cmbEngine.SelectedIndex == 1 ? "unreal" : "unity", null); };
+            t.Row("Движок:", _cmbEngine, null);
+
+            _txtLog = new TextBox { Text = _paths[_engine] };
             var browse = SmallButton("Обзор…");
             browse.Click += (o, e) => BrowseLog();
             t.Row("Файл лога:", _txtLog, browse);
 
-            var find = SmallButton("Найти логи Unity ▾");
-            find.Click += (o, e) => ShowFoundLogs(find);
-            t.Row(null, find, null);
+            _btnFind = SmallButton("Найти логи ▾");
+            _btnFind.Click += (o, e) => ShowFoundLogs(_btnFind);
+            t.Row(null, _btnFind, null);
+            _lblEngineNote = t.Hint("");
 
             _chkReadExisting = new CheckBox { Text = "При запуске разобрать то, что уже есть в логе (обычно не нужно)", AutoSize = true, Checked = _s.ReadExistingOnStart };
             t.Full(_chkReadExisting);
             _numPoll = Num(50, 2000, _s.PollMs, 0, 50);
             t.Row("Опрос файла, мс:", _numPoll, null);
-            t.Hint(("Билд Unity пишет лог в %USERPROFILE%\\AppData\\LocalLow\\<Company>\\<Product>\\Player.log. " +
-                         "Файл пересоздаётся при каждом запуске игры — тулза это замечает и читает новый файл с начала. " +
-                         "Редактор пишет в %LOCALAPPDATA%\\Unity\\Editor\\Editor.log."));
+            _lblLogHint = t.Hint(LogHintText(_engine));
             page.Controls.Add(t);
             return page;
         }
@@ -176,11 +193,11 @@ namespace CrashCatcher.Win
 
         TabPage RulesTab()
         {
-            var page = new TabPage("Правила");
+            var page = new TabPage(RulesTitle(_engine));
             var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(8) };
             t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-            _rules = new BindingList<RuleConfig>(_s.Rules.Select(r => r.Clone()).ToList());
+            _rules = _rulesBy[_engine];
             _grid = new DataGridView
             {
                 Dock = DockStyle.Fill, AutoGenerateColumns = false, AllowUserToAddRows = false, AllowUserToResizeRows = false,
@@ -193,6 +210,7 @@ namespace CrashCatcher.Win
             var mode = new DataGridViewComboBoxColumn { DataPropertyName = "Mode", HeaderText = "Режим", Width = 72, FlatStyle = FlatStyle.Flat };
             mode.Items.Add("line");
             mode.Items.Add("marker");
+            mode.Items.Add("ignore");
             _grid.Columns.Add(mode);
             _grid.Columns.Add(new DataGridViewCheckBoxColumn { DataPropertyName = "SaveClip", HeaderText = "Клип", Width = 42 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = "Tag", HeaderText = "Метка", Width = 60 });
@@ -218,10 +236,10 @@ namespace CrashCatcher.Win
             var reset = SmallButton("Стандартные правила");
             reset.Click += (o, e) =>
             {
-                if (MessageBox.Show(this, "Вернуть правила по умолчанию? Свои правила будут удалены.", "Crash Catcher",
+                if (MessageBox.Show(this, "Вернуть стандартные правила для " + EngineProfile.ById(_engine).Title + "? Свои правила этого движка будут удалены.", "Crash Catcher",
                         MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
                 _rules.Clear();
-                foreach (var r in RuleConfig.Defaults()) _rules.Add(r);
+                foreach (var r in RuleConfig.Defaults(_engine)) _rules.Add(r);
             };
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.Controls.Add(Flow(add, del, reset), 0, 1);
@@ -240,8 +258,9 @@ namespace CrashCatcher.Win
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.Controls.Add(_lblTest, 0, 3);
             var h = Hint("Режим line — сама строка является ошибкой (группы (?<type>…) и (?<msg>…) необязательны). " +
+                         "Режим ignore — исключение: ошибка, в тексте которой нашёлся шаблон, не показывается и не сохраняет клип. " +
                          "Режим marker — строка стека (например UnityEngine.Debug:LogError), текст ошибки берётся строкой выше. " +
-                         "«Клип» — сохранять ли видео по этому правилу.");
+                         "«Клип» — сохранять ли видео по этому правилу. У Unity и Unreal свои списки правил; у строк UE префикс «[время][кадр]» срезается до проверки.");
             t.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             t.Controls.Add(h, 0, 4);
             t.RowCount = 5;
@@ -270,7 +289,7 @@ namespace CrashCatcher.Win
             t.Full(_chkShowInfo);
             _chkAutostart = new CheckBox { Text = "Запускать вместе с Windows", AutoSize = true, Checked = GetAutostart() };
             t.Full(_chkAutostart);
-            t.Hint(("Поверх игры виджет виден в оконном и безрамочном режиме (Unity: Fullscreen Window). " +
+            t.Hint(("Поверх игры виджет виден в оконном и безрамочном режиме (Unity: Fullscreen Window, UE: Windowed Fullscreen). " +
                          "В эксклюзивном полноэкранном режиме игра перекрывает любые окна."));
             page.Controls.Add(t);
             return page;
@@ -289,59 +308,105 @@ namespace CrashCatcher.Win
                     else d.InitialDirectory = LocalLow();
                 }
                 catch { }
-                if (d.ShowDialog(this) == DialogResult.OK) _txtLog.Text = d.FileName;
+                if (d.ShowDialog(this) == DialogResult.OK)
+                {
+                    var guess = LogFinder.GuessEngine(d.FileName);
+                    if (guess != null && guess != _engine) SetEngine(guess, d.FileName);
+                    _txtLog.Text = d.FileName;
+                }
             }
         }
 
-        static string LocalLow()
-        {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "LocalLow");
-        }
+        static string LocalLow() { return LogFinder.LocalLow(); }
 
         void ShowFoundLogs(Control anchor)
         {
-            var found = new List<Tuple<string, string, DateTime>>();
-            try
+            var unity = LogFinder.FindUnityLogs();
+            var unreal = LogFinder.FindUnrealLogs();
+            var menu = new ContextMenuStrip();
+            var groups = _engine == "unreal"
+                ? new[] { Tuple.Create("unreal", unreal), Tuple.Create("unity", unity) }
+                : new[] { Tuple.Create("unity", unity), Tuple.Create("unreal", unreal) };
+            foreach (var g in groups)
             {
-                foreach (var company in Directory.GetDirectories(LocalLow()))
+                if (menu.Items.Count > 0) menu.Items.Add(new ToolStripSeparator());
+                var title = EngineProfile.ById(g.Item1).Title;
+                menu.Items.Add(new ToolStripMenuItem(title) { Enabled = false, Font = new Font(menu.Font, FontStyle.Bold) });
+                if (g.Item2.Count == 0)
+                    menu.Items.Add(new ToolStripMenuItem(g.Item1 == "unity" ? "   не нашёл Player.log в AppData\\LocalLow" : "   не нашёл логов UE (недавние проекты и %LOCALAPPDATA%)") { Enabled = false });
+                foreach (var f in g.Item2.OrderByDescending(x => x.Item3).Take(15))
                 {
-                    string[] products;
-                    try { products = Directory.GetDirectories(company); } catch { continue; }
-                    foreach (var product in products)
+                    var engine = g.Item1;
+                    var path = f.Item2;
+                    var item = new ToolStripMenuItem("   " + f.Item1 + "   —   " + f.Item3.ToString("dd.MM HH:mm")) { ToolTipText = path };
+                    item.Click += (o, e) =>
                     {
-                        var p = Path.Combine(product, "Player.log");
-                        if (File.Exists(p))
-                            found.Add(Tuple.Create(Path.GetFileName(product) + "  (" + Path.GetFileName(company) + ")", p, File.GetLastWriteTime(p)));
-                    }
+                        if (engine != _engine) SetEngine(engine, path);
+                        _txtLog.Text = path;
+                    };
+                    menu.Items.Add(item);
                 }
             }
-            catch { }
-            try
-            {
-                var ed = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Unity", "Editor", "Editor.log");
-                if (File.Exists(ed)) found.Add(Tuple.Create("Unity Editor (Editor.log)", ed, File.GetLastWriteTime(ed)));
-            }
-            catch { }
-
-            var menu = new ContextMenuStrip();
-            if (found.Count == 0) menu.Items.Add(new ToolStripMenuItem("Не нашёл ни одного Player.log в AppData\\LocalLow") { Enabled = false });
-            foreach (var f in found.OrderByDescending(x => x.Item3).Take(20))
-            {
-                var item = new ToolStripMenuItem(f.Item1 + "   —   " + f.Item3.ToString("dd.MM HH:mm")) { ToolTipText = f.Item2, Tag = f.Item2 };
-                item.Click += (o, e) => _txtLog.Text = (string)((ToolStripMenuItem)o).Tag;
-                menu.Items.Add(item);
-            }
             menu.Show(anchor, new Point(0, anchor.Height));
+        }
+
+        static string RulesTitle(string engine) { return engine == "unreal" ? "Правила (UE5)" : "Правила (Unity)"; }
+
+        static string LogHintText(string engine)
+        {
+            if (engine == "unreal")
+                return "Редактор и PIE пишут в <Проект>\\Saved\\Logs\\<Проект>.log (вторая копия редактора — <Проект>_2.log), " +
+                       "собранная игра — в %LOCALAPPDATA%\\<Игра>\\Saved\\Logs\\. При каждом запуске UE переименовывает старый лог в …-backup-….log " +
+                       "и начинает новый — тулза это замечает и читает новый файл с начала.";
+            return "Билд Unity пишет лог в %USERPROFILE%\\AppData\\LocalLow\\<Company>\\<Product>\\Player.log. " +
+                   "Файл пересоздаётся при каждом запуске игры — тулза это замечает и читает новый файл с начала. " +
+                   "Редактор пишет в %LOCALAPPDATA%\\Unity\\Editor\\Editor.log.";
+        }
+
+        /// <summary>Переключение движка: у каждого свой путь к логу и свой список правил.</summary>
+        void SetEngine(string engine, string fromPath)
+        {
+            if (engine == _engine) return;
+            _grid.EndEdit();
+            _paths[_engine] = _txtLog.Text.Trim().Trim('"');
+            _engine = engine;
+            _switching = true;
+            _cmbEngine.SelectedIndex = engine == "unreal" ? 1 : 0;
+            _switching = false;
+            _txtLog.Text = fromPath ?? _paths[engine];
+            _rules = _rulesBy[engine];
+            _grid.DataSource = _rules;
+            _rulesTab.Text = RulesTitle(engine);
+            _lblLogHint.Text = LogHintText(engine);
+            _lblEngineNote.Text = fromPath != null
+                ? "Движок переключён на " + EngineProfile.ById(engine).Title + " по выбранному логу. Правила — пресет этого движка (вкладка «" + RulesTitle(engine) + "»)."
+                : "Для " + EngineProfile.ById(engine).Title + " свой путь к логу и свои правила.";
+            _lblLogHint.Parent.PerformLayout();
         }
 
         void TestLine()
         {
             _grid.EndEdit();
             var line = _txtTestLine.Text;
+            var prof = EngineProfile.ById(_engine);
+            if (prof.StripPrefix != null) line = prof.StripPrefix.Replace(line, "", 1);
             if (string.IsNullOrEmpty(line)) { _lblTest.Text = "Вставь строку из лога в поле слева."; return; }
             foreach (var r in _rules)
             {
                 if (!r.Enabled || string.IsNullOrWhiteSpace(r.Pattern)) continue;
+                if (r.IsIgnore)
+                {
+                    try
+                    {
+                        if (Regex.IsMatch(line, r.Pattern, RegexOptions.Multiline))
+                        {
+                            _lblTest.Text = "Исключение «" + r.Name + "»: ошибка с таким текстом будет отброшена.";
+                            return;
+                        }
+                    }
+                    catch (Exception ex) { _lblTest.Text = "Ошибка в регулярке «" + r.Name + "»: " + ex.Message; return; }
+                    continue;
+                }
                 Match m;
                 try { m = Regex.Match(line, r.Pattern); }
                 catch (Exception ex) { _lblTest.Text = "Ошибка в регулярке «" + r.Name + "»: " + ex.Message; return; }
@@ -361,7 +426,10 @@ namespace CrashCatcher.Win
         {
             _grid.EndEdit();
             var n = _s.Clone();
-            n.LogPath = _txtLog.Text.Trim().Trim('"');
+            _paths[_engine] = _txtLog.Text.Trim().Trim('"');
+            n.Engine = _engine;
+            n.LogPath = _paths["unity"];
+            n.LogPathUnreal = _paths["unreal"];
             n.ReadExistingOnStart = _chkReadExisting.Checked;
             n.PollMs = (int)_numPoll.Value;
             n.AutoSave = _chkAutoSave.Checked;
@@ -381,9 +449,10 @@ namespace CrashCatcher.Win
             n.FontSize = (float)_numFont.Value;
             n.MaxItems = (int)_numMax.Value;
             n.ShowInfo = _chkShowInfo.Checked;
-            n.Rules = _rules.Select(r => r.Clone()).ToList();
+            n.Rules = _rulesBy["unity"].Select(r => r.Clone()).ToList();
+            n.RulesUnreal = _rulesBy["unreal"].Select(r => r.Clone()).ToList();
 
-            foreach (var r in n.Rules)
+            foreach (var r in n.Rules.Concat(n.RulesUnreal))
             {
                 if (!r.Enabled) continue;
                 try { new Regex(r.Pattern ?? ""); }

@@ -32,6 +32,11 @@ public static class CoreTests
             T("Parser: LogError в релизном Player.log", ParserReleaseLogError),
             T("Parser: idle-закрытие и хвост", ParserIdle),
             T("Abbreviate", Abbrev),
+            T("UE5: ensure с колстеком (реальный лог)", UeEnsure),
+            T("UE5: краш appError → Critical error — одна запись", UeCrash),
+            T("UE5: Accessed None, BP Runtime Error, обычный Error", UeBlueprint),
+            T("Settings: старые настройки без UE-полей", SettingsUpgrade),
+            T("LogFinder: недавние проекты UE и собранные игры", FinderUe),
             T("Book + Planner: спам одной ошибкой", PlannerSpam),
             T("Planner: кулдаун и объединение ошибок", PlannerCooldown),
             T("Planner: краш — сразу", PlannerImmediate),
@@ -477,5 +482,165 @@ TrackLoader:Load(String)
         Check(!Hotkey.TryParse("Alt+", out h), "пусто");
         Check(!Hotkey.TryParse("F1+F2", out h), "две клавиши");
         Check(Hotkey.TryParse("Alt+Z", out h) && h.Vk == 'Z', "Alt+Z");
+    }
+
+    static List<ParsedEntry> ParseUe(string text, bool withIgnore = false)
+    {
+        var rules = RuleConfig.UnrealDefaults();
+        if (!withIgnore) rules.RemoveAll(r => r.IsIgnore);
+        var p = new LogParser(rules, EngineProfile.Unreal);
+        var list = new List<ParsedEntry>();
+        p.Entry += list.Add;
+        foreach (var l in text.Replace("\r\n", "\n").Split('\n')) p.Feed(l);
+        p.Flush();
+        return list;
+    }
+
+    const string UeEnsureLog = "\uFEFFLog file open, 11/01/26 12:20:14\n" +
+@"[2026.10.31-17.32.24:031][  0]LogStats: FPlatformStackWalk::StackWalkAndDump -  0.076 s
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: === Handled ensure: ===
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: 
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: Ensure condition failed: false  [File:D:\build\++UE5\Sync\Engine\Source\Runtime\Core\Private\HAL\ConsoleManager.cpp] [Line: 4916] 
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: r.Mobile.VirtualTextures is deprecated, use r.VirtualTextures in platform specific engine .ini files instead
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: Stack: 
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: [Callstack] 0x00007ff808e8cb18 UnrealEditor-Core.dll!UnknownFunction []
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: [Callstack] 0x00007ff8081d81df UnrealEditor-Core.dll!UnknownFunction []
+[2026.10.31-17.32.24:032][  0]LogOutputDevice: Error: 
+[2026.10.31-17.32.24:048][  0]LogStats:                SubmitErrorReport -  0.000 s
+[2026.11.01-09.21.18:050][  0]LogAutomationTest: Error: Condition failed
+[2026.11.01-09.21.18:050][  0]LogAutomationTest: Error: Condition failed
+[2026.11.01-09.21.18:168][  0]LogEngine: Initializing Engine...
+";
+
+    static void UeEnsure()
+    {
+        var e = ParseUe(UeEnsureLog);
+        Eq(3, e.Count, "ensure + 2 Condition failed");
+        if (e.Count < 3) return;
+        Eq("ENSURE", e[0].Abbr, "ensure");
+        Eq("false · ConsoleManager.cpp:4916", e[0].Message.Split('\n')[0], "заголовок ensure");
+        Check(e[0].Message.Contains("r.Mobile.VirtualTextures is deprecated"), "текст ensure");
+        Eq(3, e[0].Stack.Count, "Stack: + 2 кадра (пустые убраны)");
+        Check(e[0].Stack.All(x => !x.StartsWith("LogOutputDevice")), "без префикса категории в стеке");
+        Check(e[0].Rule.SaveClip, "ensure → клип");
+        Eq("LogAutomationTest: Condition failed", e[1].Message, "строка следующей категории не приклеилась");
+        Check(!e[1].Rule.SaveClip, "Error → только консоль");
+        var book = new ErrorBook(); bool n; DateTime pr;
+        book.Add(e[1], out n, out pr); book.Add(e[2], out n, out pr);
+        Eq(1, book.Items.Count, "одинаковые Error в одну строку");
+
+        // со стандартным исключением ensure редактора при старте отбрасывается
+        var e2 = ParseUe(UeEnsureLog, true);
+        Eq(2, e2.Count, "ensure r.Mobile.* проигнорирован");
+        Check(e2.All(x => x.Abbr == "ERR"), "остались только Error");
+        var asset = ParseUe("[2026.11.01-09.21.18:050][  0]LogOutputDevice: Error: Ensure condition failed: AssetBaseClassLoaded  [File:D:\\x\\AssetManagerTypes.cpp] [Line: 82] \n[2026.11.01-09.21.18:050][  0]LogOutputDevice: Error: Stack: \n[2026.11.01-09.21.18:051][  0]LogInit: ok\n", true);
+        Eq(0, asset.Count, "ensure AssetBaseClassLoaded проигнорирован");
+        var real = ParseUe("[2026.11.02-18.01.05:200][501]LogOutputDevice: Error: Ensure condition failed: Wheel != nullptr  [File:D:\\x\\CarPhysics.cpp] [Line: 214] \n[2026.11.02-18.01.05:300][502]LogTemp: Display: ok\n", true);
+        Eq(1, real.Count, "свой ensure не игнорируется");
+    }
+
+    static void UeCrash()
+    {
+        var text = @"[2026.11.01-09.05.21:343][322]LogOutputDevice: Warning: 
+
+Script Stack (0 frames) :
+
+[2026.11.01-09.05.21:345][322]LogWindows: Error: appError called: Assertion failed: ObjectSpaceBufferOffset == INDEX_NONE [File:D:\build\++UE5\Sync\Engine\Source\Runtime\Renderer\Private\Skinning\SkinningSceneExtension.h] [Line: 118] 
+
+
+[2026.11.01-09.05.21:345][322]LogWindows: Windows GetLastError: (0)
+[2026.11.01-09.05.27:977][322]LogThreadingWindows: Error: Runnable thread Foreground Worker #0 crashed.
+[2026.11.01-09.05.27:978][322]LogWindows: Error: === Critical error: ===
+[2026.11.01-09.05.27:978][322]LogWindows: Error: 
+[2026.11.01-09.05.27:978][322]LogWindows: Error: Assertion failed: ObjectSpaceBufferOffset == INDEX_NONE [File:D:\build\++UE5\Sync\Engine\Source\Runtime\Renderer\Private\Skinning\SkinningSceneExtension.h] [Line: 118] 
+[2026.11.01-09.05.27:978][322]LogWindows: Error: [Callstack] 0x00007ff9b3f0bec8 UnrealEditor-Core.dll!UnknownFunction []
+[2026.11.01-09.05.27:978][322]LogWindows: Error: [Callstack] 0x00007ff999a2013f UnrealEditor-Renderer.dll!UnknownFunction []
+[2026.11.01-09.05.27:979][322]LogWindows: Error: Crash in runnable thread Foreground Worker #0
+";
+        var e = ParseUe(text);
+        Check(e.Count >= 1 && e.All(x => x.Abbr == "CRASH"), "только CRASH (Assertion внутри краша не отдельная ошибка): " + string.Join(",", e.Select(x => x.Abbr)));
+        Check(e.Count > 0 && e[0].Rule.Immediate, "краш — клип сразу");
+        Check(e.Count > 0 && e[0].Message.Contains("SkinningSceneExtension.h:118"), "файл:строка в заголовке: " + (e.Count > 0 ? e[0].Message : ""));
+        var book = new ErrorBook(); bool n; DateTime pr;
+        foreach (var x in e) book.Add(x, out n, out pr);
+        Eq(1, book.Items.Count, "одна строка в консоли");
+        Check(book.Items[0].Stack.Any(s => s.Contains("UnrealEditor-Renderer.dll")), "колстек в деталях");
+    }
+
+    static void UeBlueprint()
+    {
+        var text = @"[2026.11.02-18.00.01:100][500]LogScript: Warning: Accessed None trying to read property CarMovement
+	BP_PlayerCar_C /Game/Maps/Track01.Track01:PersistentLevel.BP_PlayerCar_C_0
+	Function /Game/Cars/BP_PlayerCar.BP_PlayerCar_C:ExecuteUbergraph_BP_PlayerCar:0123
+[2026.11.02-18.00.01:101][500]PIE: Error: Blueprint Runtime Error: ""Accessed None trying to read property CarMovement"". Node:  Set Throttle Graph:  EventGraph Function:  Execute Ubergraph BP Player Car Blueprint:  BP_PlayerCar
+[2026.11.02-18.00.01:102][500]LogTemp: Error: Save slot not found
+[2026.11.02-18.00.01:103][500]LogTemp: Display: ok
+";
+        var e = ParseUe(text);
+        Eq(3, e.Count, "три записи");
+        if (e.Count < 3) return;
+        Eq("NONE", e[0].Abbr, "Accessed None");
+        Eq("Accessed None trying to read property CarMovement", e[0].Message, "msg");
+        Eq(2, e[0].Stack.Count, "скрипт-стек");
+        Check(e[0].Rule.SaveClip, "Accessed None → клип");
+        Eq("BP", e[1].Abbr, "BP runtime");
+        Check(e[1].Rule.SaveClip, "BP → клип");
+        Eq("ERR", e[2].Abbr, "Error");
+        Eq("LogTemp: Save slot not found", e[2].Message, "Error msg без «: Error:»");
+    }
+
+    static void SettingsUpgrade()
+    {
+        var dir = TempDir();
+        var path = Path.Combine(dir, "s.json");
+        File.WriteAllText(path, "{\"LogPath\":\"C:\\\\x\\\\Player.log\",\"Rules\":[{\"Enabled\":true,\"Name\":\"Мой\",\"Pattern\":\"^A\",\"Mode\":\"line\",\"Tag\":\"A\"}]}");
+        string err;
+        var s = AppSettings.Load(path, out err);
+        Eq("unity", s.Engine, "движок по умолчанию");
+        Eq(1, s.Rules.Count, "правила Unity сохранились");
+        Eq(7, s.RulesUnreal.Count, "пресет UE добавился");
+        Check(s.RulesUnreal.Count(r => r.IsIgnore) == 1, "исключение одно");
+        // старые настройки 1.1 с пресетом UE без исключения — исключение добавляется один раз
+        var old = new AppSettings();
+        old.RulesUnreal.RemoveAll(r => r.IsIgnore);
+        old.Save(path);
+        var up = AppSettings.Load(path, out err);
+        Check(up.RulesUnreal.Count(r => r.IsIgnore) == 1 && up.UnrealIgnoreAdded, "миграция: исключение добавлено");
+        up.RulesUnreal.RemoveAll(r => r.IsIgnore);
+        up.Save(path);
+        var again = AppSettings.Load(path, out err);
+        Check(!again.RulesUnreal.Any(r => r.IsIgnore), "удалённое исключение не возвращается");
+        Eq(@"C:\x\Player.log", s.ActiveLogPath, "путь Unity активен");
+        s.Engine = "unreal";
+        Eq("", s.ActiveLogPath, "у UE свой путь");
+        Check(s.ActiveRules == s.RulesUnreal, "у UE свои правила");
+        Directory.Delete(dir, true);
+    }
+
+    static void FinderUe()
+    {
+        var local = TempDir();
+        var proj = Path.Combine(local, "projects", "FBlands_project");
+        Directory.CreateDirectory(Path.Combine(proj, "Saved", "Logs"));
+        File.WriteAllText(Path.Combine(proj, "FBlands_project.uproject"), "{}");
+        File.WriteAllText(Path.Combine(proj, "Saved", "Logs", "FBlands_project.log"), "x");
+        File.WriteAllText(Path.Combine(proj, "Saved", "Logs", "FBlands_project_2.log"), "x");
+        File.WriteAllText(Path.Combine(proj, "Saved", "Logs", "FBlands_project-backup-2026.11.01-08.10.23.log"), "x");
+        File.WriteAllText(Path.Combine(proj, "Saved", "Logs", "cef3.log"), "x");
+        var cfg = Path.Combine(local, "UnrealEngine", "5.8", "Saved", "Config", "WindowsEditor");
+        Directory.CreateDirectory(cfg);
+        File.WriteAllText(Path.Combine(cfg, "EditorSettings.ini"),
+            "[/Script/UnrealEd.EditorSettings]\nRecentlyOpenedProjectFiles=(ProjectName=\"" + Path.Combine(proj, "FBlands_project.uproject").Replace('\\', '/') + "\",LastOpenTime=2026.11.01-09.21.17)\n");
+        var game = Path.Combine(local, "DriftGame", "Saved", "Logs");
+        Directory.CreateDirectory(game);
+        File.WriteAllText(Path.Combine(game, "DriftGame.log"), "x");
+        var found = LogFinder.FindUnrealLogs(local);
+        var names = found.Select(f => Path.GetFileName(f.Item2)).OrderBy(x => x, StringComparer.Ordinal).ToList();
+        Eq("DriftGame.log,FBlands_project.log,FBlands_project_2.log", string.Join(",", names), "найдены логи");
+        Check(found.Any(f => f.Item1.Contains("редактор")) && found.Any(f => f.Item1.Contains("собранная игра")), "подписи");
+        Eq("unreal", LogFinder.GuessEngine(@"D:\UEprojects\FBlands_project\Saved\Logs\FBlands_project.log"), "guess UE");
+        Eq("unity", LogFinder.GuessEngine(@"C:\Users\nv\AppData\LocalLow\Studio\Game\Player.log"), "guess Unity");
+        Eq(null, LogFinder.GuessEngine(@"C:\logs\game.txt"), "guess неизвестно");
+        Directory.Delete(local, true);
     }
 }

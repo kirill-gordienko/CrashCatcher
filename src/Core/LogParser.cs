@@ -44,6 +44,7 @@ namespace CrashCatcher.Core
         long _lastConsumed; // номер последней строки, вошедшей в какую-либо запись
         ParsedEntry _open;
         bool _openSeenFrame;
+        string _openCategory;
         DateTime _lastLine;
 
         static int CountLines(string s)
@@ -63,14 +64,20 @@ namespace CrashCatcher.Core
 
         public IList<string> RuleErrors { get { return _ruleErrors; } }
 
-        public LogParser(IEnumerable<RuleConfig> rules)
+        readonly EngineProfile _profile;
+
+        public LogParser(IEnumerable<RuleConfig> rules) : this(rules, EngineProfile.Unity) { }
+
+        public LogParser(IEnumerable<RuleConfig> rules, EngineProfile profile)
         {
+            _profile = profile ?? EngineProfile.Unity;
             foreach (var r in rules)
             {
                 if (r == null || !r.Enabled || string.IsNullOrWhiteSpace(r.Pattern)) continue;
                 try
                 {
-                    var rx = new Regex(r.Pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
+                    var rx = new Regex(r.Pattern, RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline, TimeSpan.FromMilliseconds(200));
+                    if (r.IsIgnore) { _ignore.Add(rx); continue; }
                     var names = rx.GetGroupNames();
                     _rules.Add(new Compiled
                     {
@@ -88,6 +95,11 @@ namespace CrashCatcher.Core
             return line.Length > 0 && FrameRx.IsMatch(line);
         }
 
+        bool IsFrameLine(string line)
+        {
+            return line.Length > 0 && _profile.FrameRx.IsMatch(line);
+        }
+
         /// <summary>Файл пересоздан — забываем контекст.</summary>
         public void Reset()
         {
@@ -101,6 +113,8 @@ namespace CrashCatcher.Core
             _lineNo++;
             var now = Clock();
             _lastLine = now;
+            if (line.Length > 0 && line[0] == '\uFEFF') line = line.Substring(1);
+            if (_profile.StripPrefix != null) line = _profile.StripPrefix.Replace(line, "", 1);
 
             if (line.Trim().Length == 0)
             {
@@ -116,6 +130,15 @@ namespace CrashCatcher.Core
                 try { m = c.Regex.Match(line); }
                 catch (RegexMatchTimeoutException) { continue; }
                 if (!m.Success) continue;
+
+                // открыт дамп краша — всё, что идёт следом (в т.ч. «Assertion failed»), часть этого краша
+                if (_open != null && _open.Rule.Group && _open.Rule != c.Rule)
+                {
+                    AppendStack(line);
+                    _lastConsumed = _lineNo;
+                    Push(line, false, true);
+                    return;
+                }
 
                 if (!c.Rule.IsMarker)
                 {
@@ -137,6 +160,7 @@ namespace CrashCatcher.Core
                         Close();
                         _open = NewEntry(c, m, line, _lineNo, now);
                         _openSeenFrame = false;
+                        _openCategory = _profile.CategoryOf(line);
                         _lastConsumed = _lineNo;
                     }
                     Push(line, false, false);
@@ -160,6 +184,7 @@ namespace CrashCatcher.Core
                     };
                     _open = e;
                     _openSeenFrame = true;
+                    _openCategory = null;
                     foreach (var b in between) AppendStack(b);
                     AppendStack(line);
                 }
@@ -168,7 +193,7 @@ namespace CrashCatcher.Core
                 return;
             }
 
-            bool frame = IsFrame(line);
+            bool frame = IsFrameLine(line);
             if (_open != null)
             {
                 if (_open.Rule.Group || frame)
@@ -177,15 +202,30 @@ namespace CrashCatcher.Core
                     if (frame) _openSeenFrame = true;
                     _lastConsumed = _lineNo;
                 }
-                else if (!_openSeenFrame && _open.Message.Length < 2000 && CountLines(_open.Message) < 8)
+                else if (!_openSeenFrame && _open.Message.Length < 2000 && CountLines(_open.Message) < 8 && SameCategory(line))
                 {
                     // продолжение сообщения до начала стека (у MissingReferenceException оно в две строки)
-                    _open.Message = _open.Message + "\n" + line.Trim();
+                    var cont = _profile.CleanMessage(line);
+                    var catName = _openCategory != null ? _openCategory.Split(':')[0] : null;
+                    if (catName != null && cont.StartsWith(catName + ": ", StringComparison.Ordinal))
+                        cont = cont.Substring(catName.Length + 2);
+                    _open.Message = _open.Message + "\n" + cont;
                     _lastConsumed = _lineNo;
                 }
                 else Close();
             }
             Push(line, false, frame);
+        }
+
+        /// <summary>
+        /// UE: строка-продолжение должна быть той же категории, что и сама ошибка
+        /// (иначе это просто следующая строка лога, например «LogEngine: Initializing…»).
+        /// </summary>
+        bool SameCategory(string line)
+        {
+            if (_profile.CategoryRx == null) return true;
+            var cat = _profile.CategoryOf(line);
+            return cat == null || cat == _openCategory;
         }
 
         /// <summary>Закрывает запись, если лог замолчал.</summary>
@@ -196,11 +236,27 @@ namespace CrashCatcher.Core
 
         public void Flush() { Close(); }
 
+        readonly List<Regex> _ignore = new List<Regex>();
+
+        /// <summary>Сколько записей отброшено правилами-исключениями.</summary>
+        public int Ignored { get; private set; }
+
+        bool IsIgnored(ParsedEntry e)
+        {
+            foreach (var rx in _ignore)
+            {
+                try { if (rx.IsMatch(e.Message ?? "")) return true; }
+                catch (RegexMatchTimeoutException) { }
+            }
+            return false;
+        }
+
         void Close()
         {
             if (_open == null) return;
             var e = _open;
             _open = null;
+            if (_ignore.Count > 0 && IsIgnored(e)) { Ignored++; return; }
             var h = Entry;
             if (h != null) h(e);
         }
@@ -222,6 +278,7 @@ namespace CrashCatcher.Core
                 e.Message = m.Groups["msg"].Value.TrimStart(':', ' ', '\t').TrimEnd();
             else
                 e.Message = line.Trim();
+            e.Message = _profile.CleanMessage(e.Message);
             return e;
         }
 
@@ -230,7 +287,9 @@ namespace CrashCatcher.Core
             if (_open == null) return;
             if (line.StartsWith("(Filename:", StringComparison.Ordinal)) return;
             int cap = _open.Rule.Group ? MaxStackLinesGrouped : MaxStackLines;
-            if (_open.Stack.Count < cap) _open.Stack.Add(line.TrimEnd());
+            line = _profile.CleanStack(line);
+            if (line.Trim().Length == 0) return;
+            if (_open.Stack.Count < cap) _open.Stack.Add(line);
             else _open.DroppedLines++;
         }
 

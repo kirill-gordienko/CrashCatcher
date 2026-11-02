@@ -7,9 +7,9 @@ using CrashCatcher.Win;
 
 [assembly: AssemblyTitle("Crash Catcher")]
 [assembly: AssemblyProduct("Crash Catcher")]
-[assembly: AssemblyDescription("Ловит ошибки в логе Unity и сохраняет клип NVIDIA (Alt+F10)")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyDescription("Ловит ошибки в логе Unity и Unreal Engine 5 и сохраняет клип NVIDIA (Alt+F10)")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace CrashCatcher
 {

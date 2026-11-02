@@ -137,7 +137,7 @@ namespace CrashCatcher.Win
             if (Native.IsUserAnAdmin()) Info("Запущено от администратора", InfoKind.Normal);
             if (!S.FirstRunDone)
             {
-                Info("Первый запуск. Укажи Player.log в настройках и проверь кнопкой «Тест», что NVIDIA сохраняет клип.", InfoKind.Warn);
+                Info("Первый запуск. Выбери движок и лог игры в настройках и проверь кнопкой «Тест», что NVIDIA сохраняет клип.", InfoKind.Warn);
                 Info("В NVIDIA App должен быть включён «Мгновенный повтор» на 5 минут (Alt+F10).", InfoKind.Normal);
                 ShowSettings();
             }
@@ -168,7 +168,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
         {
             var t0 = DateTime.Now.AddSeconds(-95);
             Book.AddInfo("Слежу за C:\\Users\\nvrsk\\AppData\\LocalLow\\Studio\\DriftRacing\\Player.log", InfoKind.Normal, t0);
-            var p = new LogParser(S.Rules);
+            var p = new LogParser(RuleConfig.Defaults());
             int i = 0;
             p.Clock = () => t0.AddSeconds(20 + 9 * i);
             var list = new List<ParsedEntry>();
@@ -226,8 +226,8 @@ InvalidOperationException: Collection was modified; enumeration operation may no
         string WatchKey()
         {
             var sb = new System.Text.StringBuilder();
-            sb.Append(S.LogPath).Append('|').Append(S.PollMs);
-            foreach (var r in S.Rules) sb.Append('|').Append(r.Enabled).Append(r.Name).Append(r.Pattern).Append(r.Mode).Append(r.Group).Append(r.Tag);
+            sb.Append(S.Engine).Append('|').Append(S.ActiveLogPath).Append('|').Append(S.PollMs);
+            foreach (var r in S.ActiveRules) sb.Append('|').Append(r.Enabled).Append(r.Name).Append(r.Pattern).Append(r.Mode).Append(r.Group).Append(r.Tag);
             return sb.ToString();
         }
 
@@ -247,10 +247,10 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             _tailState = TailState.Starting;
             _missingReported = false;
             if (Paused) { UpdateStatus(); return; }
-            var path = AppSettings.Expand(S.LogPath);
+            var path = AppSettings.Expand(S.ActiveLogPath);
             if (string.IsNullOrEmpty(path)) { UpdateStatus(); return; }
 
-            var parser = new LogParser(S.Rules);
+            var parser = new LogParser(S.ActiveRules, S.Profile);
             foreach (var e in parser.RuleErrors) Info("Ошибка в правиле: " + e, InfoKind.Bad);
             parser.Entry += e => _entries.Enqueue(e);
             var tailer = new LogTailer(path, S.ReadExistingOnStart && !_startedOnce, S.PollMs);
@@ -356,7 +356,7 @@ InvalidOperationException: Collection was modified; enumeration operation may no
 
             var pressedLocal = job.PressedAt ?? DateTime.Now;
             var window = Book.SeenSince(pressedLocal.AddSeconds(-S.ReplayLengthSec));
-            string sidecar = ClipText.Build(job, window, AppSettings.Expand(S.LogPath), S.ReplayLengthSec);
+            string sidecar = ClipText.Build(job, window, AppSettings.Expand(S.ActiveLogPath), S.ReplayLengthSec);
             var nameTime = job.Records.Count > 0 ? job.FirstErrorTime : pressedLocal;
             string baseName = nameTime.ToString("yyyy-MM-dd_HH-mm-ss") + "_" + job.Tag;
             string what = job.Records.Count > 0 ? job.Tag : "вручную";
@@ -514,13 +514,13 @@ InvalidOperationException: Collection was modified; enumeration operation may no
             else if (id == HK_CLEAR) { ClearConsole(); Overlay.Flash("Консоль очищена"); }
         }
 
-        public bool HasLogPath { get { return !string.IsNullOrWhiteSpace(S.LogPath); } }
+        public bool HasLogPath { get { return !string.IsNullOrWhiteSpace(S.ActiveLogPath); } }
 
         public string EmptyText
         {
             get
             {
-                if (!HasLogPath) return "Укажи путь к Player.log в настройках (кнопка с шестерёнкой)";
+                if (!HasLogPath) return "Укажи лог игры (" + S.Profile.Title + ") в настройках — кнопка с шестерёнкой";
                 if (Paused) return "Пауза";
                 return ""; // пустая консоль — без надписи
             }
@@ -530,10 +530,10 @@ InvalidOperationException: Collection was modified; enumeration operation may no
         {
             Color c;
             string t;
-            var file = HasLogPath ? Path.GetFileName(AppSettings.Expand(S.LogPath)) : "";
+            var file = HasLogPath ? Path.GetFileName(AppSettings.Expand(S.ActiveLogPath)) : "";
             if (!HasLogPath) { c = Color.FromArgb(150, 150, 150); t = "Лог не указан — открой настройки"; }
             else if (Paused) { c = Color.FromArgb(150, 150, 150); t = "Пауза · " + file; }
-            else if (_tailState == TailState.Watching) { c = Color.FromArgb(81, 207, 102); t = "Слежу · " + file + (S.AutoSave ? "" : " · автоклипы выключены"); }
+            else if (_tailState == TailState.Watching) { c = Color.FromArgb(81, 207, 102); t = "Слежу · " + (S.IsUnreal ? "UE5" : "Unity") + " · " + file + (S.AutoSave ? "" : " · автоклипы выключены"); }
             else if (_tailState == TailState.Missing) { c = Color.FromArgb(252, 196, 25); t = "Жду появления " + file; }
             else if (_tailState == TailState.Error) { c = Color.FromArgb(255, 107, 107); t = "Ошибка чтения " + file; }
             else { c = Color.FromArgb(150, 150, 150); t = "Запуск…"; }
